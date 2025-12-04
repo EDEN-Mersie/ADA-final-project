@@ -7,7 +7,6 @@ This repository contains data and R code for my Applied Data Analysis (ADA) fina
 ## Files Included
 - `final project ADA code.Rmd`: Main R Markdown file for data cleaning, multiple imputation, and analysis
 - `README.md`: This file
-- `LLCP2024.XPT`:dataset 
 
 ## What the Code Does
 - Imports and subsets BRFSS 2024 data (adults 18–64 in 50 states + DC)  
@@ -27,4 +26,5 @@ This repository contains data and R code for my Applied Data Analysis (ADA) fina
 ## Author
 - Name: Eden Mersiehazen  
 - Course: Applied Data Analysis (ADA)  
+
 - Date: 12/2025
