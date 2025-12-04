@@ -1,0 +1,797 @@
+---
+title: "ADA final eden"
+author: "Eden"
+date: "2025-11-28"
+output:
+  word_document: default
+  html_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+## Getting ready
+
+1. Go to: <https://www.cdc.gov/brfss/annual_data/annual_2024.html>
+2. Download the **2024 BRFSS data** (SAS Transport Format, `.XPT` file).
+3. Unzip the file and put the `.XPT` file in the same folder as this code (or update the file path in your import code).
+
+## Helpful information
+
+BRFSS 2024 codebook: USCODE24_LLCP_082125.HTML (downloaded from the CDC BRFSS 2024 documentation page).
+
+We will use the following variables in this analysis:
+
+**FLUSHOT7** – Adult flu shot/spray in the past 12 months  
+Label in codebook: *Adult flu shot/spray past 12 mos* (Immunization, Core Section 14).  
+Question (paraphrased): In the past 12 months, have you had either a flu vaccine sprayed in your nose or a flu shot injected into your arm? :contentReference[oaicite:0]{index=0}  
+Values:  
+- 1 = Yes  
+- 2 = No  
+- 7 = Don’t know / Not sure  
+- 9 = Refused  
+- BLANK = Not asked or Missing :contentReference[oaicite:1]{index=1}  
+
+**_HLTHPL2** – Any health care coverage (calculated variable)  
+This is a calculated variable in the BRFSS “Calculated Variables” section that indicates whether the respondent has **any health care coverage**, derived from the primary insurance variable PRIMINS2 and age.  
+Values (from the calculated-variable notes):  
+- 1 = Has any health care coverage  
+- 2 = No health care coverage  
+- 9 = Don’t know / Not Sure, Refused, or Missing  
+   Notes: includes adults 18–64 with PRIMINS2 coded 77, 99, or Missing, and adults ≥65 in the coverage-unknown category.   
+
+**_AGE80** – Imputed age value collapsed above 80 (categorical age)  
+Label in codebook: *Imputed Age value collapsed above 80* (Calculated Variables, Module 7). :contentReference[oaicite:3]{index=3}  
+Key value labels (examples):  
+- “18 – 24” = Imputed age 18 to 24  
+- “25 – 29” = Imputed age 25 to 29  
+- …  
+- “80 – 99” = Imputed age 80 or older  
+- “Don’t know/Refused/Missing” for records with age missing or coded 7–9 in AGE   
+
+**SEXVAR** – Sex of respondent  
+Label in codebook: *Sex of Respondent*. :contentReference[oaicite:5]{index=5}  
+Values:  
+- 1 = Male (if LANDSEX3 = 1 or CELLSEX3 = 1)  
+- 2 = Female (if LANDSEX3 = 2 or CELLSEX3 = 2)  
+
+**_INCOMG1** – Computed income categories  
+Label in codebook: *Computed income categories* (Calculated Variables). :contentReference[oaicite:6]{index=6}  
+Values:  
+- 1 = Less than \$15,000 (INCOME3 = 1, 2) :contentReference[oaicite:7]{index=7}  
+- 2 = \$15,000 to \< \$25,000 (INCOME3 = 3, 4) :contentReference[oaicite:8]{index=8}  
+- 3 = \$25,000 to \< \$35,000 (INCOME3 = 5, 6)  
+- 4 = \$35,000 to \< \$50,000 (INCOME3 = 7, 8)  
+- 5 = \$50,000 to \< \$100,000 (INCOME3 = 9, 10)  
+- 6 = \$100,000 or more (INCOME3 = 11)  
+- 9 = Don’t know / Not Sure, Refused, or Missing (INCOME3 = 77, 99, or missing)
+
+##### 1. Install packages and open libraries needed for importing data, managing data, and for imputations (code given).
+
+```{r, eval = FALSE}
+pacman::p_load(haven, tidyverse, naniar, VIM, mice, lattice, table1)
+```
+
+## 2. Import the LLCP2024.XPT  Hints: the BRFSS file name has a space after the .XPT; use the read_xpt function (haven package);.
+
+
+```{r, eval = FALSE}
+BRFSS2024 <-
+  read_xpt("LLCP2024.XPT ")
+
+##save(BRFSS2024, file = "brfss_workspace.RData")
+load("/brfss_workspace.RData")
+```
+
+## Select the following variables 
+
+```{r, eval = FALSE}
+# select variables of interest for imputation
+df <- BRFSS2024 %>%
+dplyr::select(FLUSHOT7, `_HLTHPL2`, `_AGE80`, SEXVAR, `_INCOMG1`, `_STATE`) %>%
+##inclusion criteria
+dplyr::select(FLUSHOT7, `_HLTHPL2`, `_AGE80`, SEXVAR, `_INCOMG1`, `_STATE`) %>%
+  dplyr::filter(
+    `_AGE80` >= 18, `_AGE80` <= 64,      # adults 18–64 years
+    !`_STATE` %in% c(66, 72, 78)         # drop Guam(66), Puerto Rico(72), USVI(78)
+)
+# rename variables to simpler names
+names(df) <- c("flushot", "insurance", "age", "sex", "income", "state")
+```
+
+
+## rename variables and change 7 and 9 to NAs
+
+
+```{r, eval = FALSE}
+
+
+# 1. Set “don’t know / refused” codes to NA
+df <- replace_with_na(
+  df,
+  replace = list(
+    flushot  = c(7, 9),  # FLUSHOT7
+    insurance = c(9),     # _HLTHPL2
+    sex       = c(7, 9),  # just in case SEXVAR has these
+    income    = c(9)      # _INCOMG1
+    # age (_AGE80) is already an imputed age and usually has no 7/9 codes
+  )
+)
+
+# 2. Turn variables into factors with labels
+
+## Flu shot in past 12 months (FLUSHOT7)
+df$flushot <- factor(
+  df$flushot,
+  levels = c(1, 2),
+  labels = c("Yes", "No")
+)
+
+## Any health insurance coverage (_HLTHPL2)
+df$insurance <- factor(
+  df$insurance,
+  levels = c(1, 2),
+  labels = c("Has coverage", "No coverage")
+)
+
+## Sex (SEXVAR)
+df$sex <- factor(
+  df$sex,
+  levels = c(1, 2),
+  labels = c("Male", "Female")
+)
+
+## Income categories (_INCOMG1)
+df$income <- factor(
+  df$income,
+  levels = c(1:6),
+  labels = c(
+    "Less than $15,000",
+    "$15,000 to < $25,000",
+    "$25,000 to < $35,000",
+    "$35,000 to < $50,000",
+    "$50,000 to < $100,000",
+    "$100,000 or more"
+  )
+)
+
+# (age stays numeric/categorical as coded in _AGE80; no relabeling here)
+
+# 3. Check distributions with NAs included
+table(df$flushot,  useNA = "always")
+table(df$insurance, useNA = "always")
+table(df$sex,       useNA = "always")
+table(df$income,    useNA = "always")
+```
+
+###
+#####  Understanding the data
+
+
+##### a. Get a summary of each variable in the dataframe to determine how much missing data there is for each variable (code given).
+
+```{r, eval = FALSE}
+summary(df)
+```
+
+##### b. Create a variable for missing flu_shot our outcome of interest
+
+```{r, eval = FALSE}
+df$flushot_miss <- ifelse(is.na(df$flushot), 1, 0)
+
+# check new variable
+table(df$flushot_miss)
+
+```
+
+##### c.  Use the table1 function (code provided below to examine differences between those with missing data and those without missing data) (code given). Comment on what differences you see.
+``` {r, eval = FALSE}
+# Run a Table 1 to look at differences in other variables
+# between adults who did and did not receive a flu shot
+table1(~ insurance + age + sex + income | flushot_miss, df)
+
+```
+
+
+##  R MICE (Multiple Imputation by Chained Equations) package and the NHANES dataset that is provided with the package. 
+```{r}
+# VIM package for plotting missing data patterns
+# mice package for imputing missing data
+# lattice for plotting to look at quality of imputations using stripplot
+# dplyr for data management/sub-setting functions
+
+##pacman::p_load(VIM, mice, lattice, dplyr)
+```
+
+
+
+## Look at missing data patterns using the md.pattern function
+```{r}
+# Drop flushot_miss and state, save as df2
+df2 <- subset(df, select = -c(flushot_miss, state))
+
+# Check
+names(df2)
+md.pattern(df2, rotate.names = TRUE)
+```
+
+
+```{r}
+imp <- mice(df2, # dataframe
+            m = 10, # number of imputations, 5 is default,  5-10 is usually enough but some set it to the number of variables being imputed. 
+            maxit = 5, # number of imputations got get the imputation model to converge. The default is 5
+            seed = 1000000) # set so that everytime you run this code you get the same imputation datasets. Number is arbitrary
+imp
+
+```
+
+```{r}
+# imp$imp is a list that holds the imputed values for each variable
+# Only variables that had missing data AND were imputed will appear here.
+
+# Check imputed values for health insurance
+imp$imp$insurance
+
+# Check imputed values for income
+imp$imp$income
+
+# Check imputed values for flu shot (only if you allowed mice to impute flushot)
+imp$imp$flushot
+
+# If age or sex had missing values and were imputed, they will also appear here:
+imp$imp$age
+imp$imp$sex
+
+# In each of these:
+# - rows = cases that were missing originally
+# - columns = each of the m imputed datasets (m = 10 in your run)
+```
+
+
+```{r}
+imp1 <- mice::complete(data=imp, action=1) # action gives the imputation number you want. In this case the first imputation dataframe
+imp1
+
+longimp <- mice::complete(data=imp, action="long") # To get all the imputations in one dataframe provide the action "long". Two columns are added: 1) .imp, integer, referring the imputation number, and 2) .id, integer, the id number in the original dataframe
+
+longimp
+# To read more about the complete function, type help(complete.mids) or search complete.mids in the help function
+
+
+```
+
+```{r}
+# Save first completed dataset
+saveRDS(imp1, file = "imp1flu2.Rds")
+# To load this later in a new session/Rmd:
+##imp1 <- readRDS("imp1flu2.Rds")
+
+# Save long-format imputations
+saveRDS(longimp, file = "longimpflu2.Rds")
+# To load this later:
+# longimp <- readRDS("longimpflu.Rds")
+
+#  Save the full mids object so you can refit models / change complete(action=...)
+saveRDS(imp, file = "impflu2.Rds")
+# To load this later:
+# imp <- readRDS("impflu.Rds")
+
+
+```
+
+
+## Let's look at the imputed compared to the non-imputed data to see how the distributions compare using the function stripplot that plots the values for the imputed data and complete data in "strips"
+```{r}
+
+stripplot(
+  x    = imp,                                      # mids object
+  data = age + income + insurance + flushot ~ .imp,# variables by imputation number
+  jit  = TRUE,                                     # jitters overlapping points
+  pch  = c(1, 20),                                 # symbols for observed vs imputed
+  xlab = "Blue = Non-missing, Imputation number"   # x-axis label
+)
+```
+
+
+
+## table 1
+
+```{r}
+##imp1 <- readRDS("imp1flu2.Rds")
+# Add variable labels
+label(imp1$age)       <- "Age (years)"
+label(imp1$sex)       <- "Sex"
+label(imp1$income)    <- "Household income"
+label(imp1$insurance) <- "Health insurance status"
+label(imp1$flushot)   <- "Flu shot in past 12 months"
+
+# Table 1 stratified by insurance status
+table1(
+  ~ age + sex + income + flushot | insurance,
+  data         = imp1,
+  overall      = "Total",
+  rowlabelhead = "Variable",
+  footnote     = "SD = standard deviation"
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Binary logistic regression
+# Install packages and open libraries
+
+```{r}
+pacman::p_load(ggplot2, car, odds.n.ends, readr, dplyr, tidyr) 
+```
+
+
+
+
+##creating age catagory and checking catagory and missing of other variables
+
+```{r}
+library(dplyr)
+
+imp1 <- imp1 %>%
+  select(flushot, insurance, age, sex, income) %>%
+  mutate(
+    age_cat = case_when(
+      age >= 18 & age < 30 ~ 0,
+      age >= 30 & age < 40 ~ 1,
+      age >= 40 & age < 50 ~ 2,
+      age >= 50 & age <= 64 ~ 3
+    )
+  )
+
+imp1$age_cat <- factor(
+  imp1$age_cat,
+  levels = 0:3,
+  labels = c("18 to 29",
+             "30 to 39",
+             "40 to 49",
+             "50 to 64")
+)
+
+table(imp1$flushot,   useNA = "always")
+table(imp1$insurance, useNA = "always")
+table(imp1$sex,       useNA = "always")
+table(imp1$income,    useNA = "always")
+table(imp1$age_cat,   useNA = "always")
+
+summary(imp1$age)
+```
+##Table 1
+
+```{r}
+library(table1)
+library(Hmisc)
+
+## Variable labels
+label(imp1$age_cat)   <- "Age category (years)"
+label(imp1$sex)       <- "Sex"
+label(imp1$income)    <- "Household income"
+label(imp1$insurance) <- "Health insurance status"
+label(imp1$flushot)   <- "Flu shot in past 12 months"
+
+
+table1(
+  ~ age_cat + sex + income + flushot | insurance,
+  data         = imp1,
+  overall      = "Total",
+  rowlabelhead = "Variable",
+  caption      = "Table 1. Characteristics of adults aged 18–64 years by health insurance status (BRFSS 2024, imputed sample).",
+  footnote     = "SD = standard deviation"
+)
+
+```
+
+
+
+##checking linearity of continous age variable
+```{r}
+# Create age × log(age) term
+imp1$age_times_log_age <- imp1$age * log(imp1$age)
+
+# Fit logistic regression including age and the interaction term
+model_age_lin <- glm(
+  flushot ~ age + age_times_log_age + insurance + sex + income,
+  data   = imp1,
+  family = "binomial"
+)
+
+summary(model_age_lin)
+```
+
+
+
+
+
+
+##make a box plot to visually examine how the distribution flushot varies by the binary health coverage use variable.
+
+
+
+```{r}
+library(ggplot2)
+
+ggplot(data = imp1) +
+  geom_bar(aes(x = flushot, fill = insurance),
+           position = "fill") +          # "fill" = proportions in each bar
+  theme_bw() +
+  xlab("Flu shot in past 12 months") +
+  ylab("Proportion") +
+  labs(fill = "Health insurance status")
+```
+
+
+
+
+
+# 6. run a univariate logistic regression model for insurance and calculate ORs and 95% CIs.
+
+```{r}
+# 6. Univariate logistic regression: flu shot ~ insurance status
+model_insurance <- glm(flushot ~ insurance,
+                       data   = imp1,
+                       family = "binomial")
+
+summary(model_insurance)
+
+# Odds ratios and 95% CIs (using helper function)
+odds.n.ends(model_insurance)
+```
+```{r}
+# Wald odds ratios and 95% CIs
+coefs <- summary(model_insurance)$coefficients
+
+est <- coefs[, "Estimate"]
+se  <- coefs[, "Std. Error"]
+p   <- coefs[, "Pr(>|z|)"]
+
+OR    <- exp(est)
+lower <- exp(est - 1.96 * se)
+upper <- exp(est + 1.96 * se)
+
+wald_table <- data.frame(
+  term  = rownames(coefs),
+  OR    = OR,
+  LCL   = lower,
+  UCL   = upper,
+  p_val = p,
+  row.names = NULL
+)
+
+wald_table
+```
+
+
+
+#   run a multivariate logistic regression model that includes insurance plus age, and income in the model as covariates and get the ORs and 95% CIs.
+
+```{r}
+
+#  Multivariable logistic regression: insurance + covariates
+model_full <- glm(flushot ~ insurance + age_cat + sex + income,
+                  data   = imp1,
+                  family = "binomial")
+
+# Get ORs and 95% CIs
+odds.n.ends(model_full)
+```
+
+```{r}
+
+
+summary(model_full)  # log-odds, SE, p-values
+
+# ---- Wald odds ratios and 95% CIs ----
+coefs <- summary(model_full)$coefficients
+
+est <- coefs[, "Estimate"]
+se  <- coefs[, "Std. Error"]
+p   <- coefs[, "Pr(>|z|)"]
+
+OR    <- exp(est)
+lower <- exp(est - 1.96 * se)
+upper <- exp(est + 1.96 * se)
+
+wald_table_full <- data.frame(
+  term  = rownames(coefs),
+  OR    = OR,
+  LCL   = lower,
+  UCL   = upper,
+  p_val = p,
+  row.names = NULL
+)
+
+wald_table_full
+
+
+```
+
+
+
+
+##checking multicollinearity
+
+```{r}
+library(car)
+
+vif(model_full)
+```
+
+
+ Next, look for influential observations from the multivariate model with  Cook's D 
+```{r}
+# 8. Check for influential observations using Cook's D
+plot(model_full, which = 4, id.n = 5, col = "red") 
+```
+
+
+
+
+
+```{r}
+#install.packages("pROC")
+library(pROC)
+library(ggplot2)
+
+logit_plots <- function(model, data, outcome_var) {
+  # predicted probs
+  probs  <- predict(model, type = "response")
+  actual <- data[[outcome_var]]
+
+  # Histogram of predicted probabilities by outcome
+  df_plot <- data.frame(
+    pred   = probs,
+    outcome = actual
+  )
+
+  print(
+    ggplot(df_plot, aes(x = pred, fill = outcome)) +
+      geom_histogram(position = "identity", alpha = 0.4, bins = 30) +
+      theme_bw() +
+      xlab("Predicted probability of \"No\" flu shot") +
+      ylab("Count") +
+      labs(fill = "Observed flu shot") +
+      ggtitle("Predicted probabilities by observed flu shot status")
+  )
+
+  # ROC + AUC
+  roc_obj <- roc(actual, probs)
+  cat("AUC:", as.numeric(auc(roc_obj)), "\n")
+  plot(roc_obj, main = "ROC curve")
+}
+```
+
+
+
+## Predictive performance, sensitivity/specificity, ROC & AUC
+# (histograms of predicted probabilities + ROC curve) without income
+
+```{r}
+#  Primary adjusted model: insurance + age + sex
+model_primary <- glm(
+  flushot ~ insurance + age_cat + sex,
+  data   = imp1,
+  family = "binomial"
+)
+
+
+summary(model_primary)  # log-odds, SE, p-values
+
+# ---- Wald odds ratios and 95% CIs ----
+coefs <- summary(model_primary)$coefficients
+
+est <- coefs[, "Estimate"]
+se  <- coefs[, "Std. Error"]
+p   <- coefs[, "Pr(>|z|)"]
+
+OR    <- exp(est)
+lower <- exp(est - 1.96 * se)
+upper <- exp(est + 1.96 * se)
+
+wald_table_full <- data.frame(
+  term  = rownames(coefs),
+  OR    = OR,
+  LCL   = lower,
+  UCL   = upper,
+  p_val = p,
+  row.names = NULL
+)
+
+wald_table_full
+
+
+
+
+
+
+```
+
+
+```{r}
+# 9b–d. Predictive performance, sensitivity/specificity, ROC & AUC
+# (histograms of predicted probabilities + ROC curve)
+#odds.n.ends(model_primary, predProbPlot = TRUE, rocPlot = TRUE)
+
+
+logit_plots(model_primary, imp1, "flushot")
+```
+
+
+
+
+##Predictive performance, sensitivity/specificity, ROC & AUC
+# (histograms of predicted probabilities + ROC curve) with income or on full model
+
+```{r}
+# Re-check discrimination (AUC, sensitivity/specificity, etc.)
+#odds.n.ends(model_full, predProbPlot = TRUE, rocPlot = TRUE)
+
+
+coefs <- summary(model_full)$coefficients
+
+est <- coefs[, "Estimate"]
+se  <- coefs[, "Std. Error"]
+p   <- coefs[, "Pr(>|z|)"]
+
+wald_table_full <- data.frame(
+  term  = rownames(coefs),
+  OR    = exp(est),
+  LCL   = exp(est - 1.96 * se),
+  UCL   = exp(est + 1.96 * se),
+  p_val = p,
+  row.names = NULL
+)
+
+wald_table_full
+
+
+logit_plots(model_full, imp1, "flushot")
+
+
+
+```
+
+
+
+
+
+
+
+
+### Optional extension 2: effect modification by income (multiplicative)
+
+
+```{r}
+library(lmtest)
+# Model with insurance × income interaction
+model_int <- glm(
+  flushot ~ insurance * income + age_cat + sex,
+  data   = imp1,
+  family = "binomial"
+)
+
+# Likelihood ratio test: interaction vs no-interaction model
+
+summary(model_int)
+lrtest(model_full, model_int)
+
+```
+
+
+
+###interaction by stratification
+
+```{r}
+library(dplyr)
+
+# I picked one income group 
+levels(imp1$income)
+#  "Less than $15,000", "$15,000 to < $25,000", ..., "$100,000 or more"
+
+# Model for lowest income group
+low_inc_model <- glm(
+  flushot ~ insurance + age_cat + sex,
+  data   = imp1 %>% filter(income == "Less than $15,000"),
+  family = "binomial"
+)
+summary(low_inc_model)
+##odds.n.ends(low_inc_model)
+
+coefs <- summary(low_inc_model)$coefficients
+
+est <- coefs[, "Estimate"]
+se  <- coefs[, "Std. Error"]
+p   <- coefs[, "Pr(>|z|)"]
+
+wald_table_full1 <- data.frame(
+  term  = rownames(coefs),
+  OR    = exp(est),
+  LCL   = exp(est - 1.96 * se),
+  UCL   = exp(est + 1.96 * se),
+  p_val = p,
+  row.names = NULL
+)
+
+wald_table_full1
+
+
+
+
+
+```
+
+
+
+
+
+```{r}
+library(dplyr)
+
+# I pick the highest income group 
+levels(imp1$income)
+# e.g. "Less than $15,000", "$15,000 to < $25,000", ..., "$100,000 or more"
+
+# Model for highest income group
+high_inc_model <- glm(
+  flushot ~ insurance + age_cat + sex,
+  data   = imp1 %>% filter(income == "$100,000 or more"),
+  family = "binomial"
+)
+
+
+
+summary(high_inc_model)
+##odds.n.ends(high_inc_model)
+
+coefs <- summary(high_inc_model)$coefficients
+
+est <- coefs[, "Estimate"]
+se  <- coefs[, "Std. Error"]
+p   <- coefs[, "Pr(>|z|)"]
+
+wald_table_full <- data.frame(
+  term  = rownames(coefs),
+  OR    = exp(est),
+  LCL   = exp(est - 1.96 * se),
+  UCL   = exp(est + 1.96 * se),
+  p_val = p,
+  row.names = NULL
+)
+
+wald_table_full
+
+```
+
+
+
+
+#To get unadjusted odds ratio for income variables
+
+```{r}
+low_data  <- subset(imp1, income == "Less than $15,000")
+high_data <- subset(imp1, income == "$100,000 or more")
+
+## Unadjusted ORs within each stratum
+low_unadj  <- glm(flushot ~ insurance, data = low_data,  family = binomial)
+high_unadj <- glm(flushot ~ insurance, data = high_data, family = binomial)
+
+# Get ORs + Wald 95% CI
+exp(cbind(OR = coef(low_unadj),  confint.default(low_unadj)))
+exp(cbind(OR = coef(high_unadj), confint.default(high_unadj)))
+```
+
